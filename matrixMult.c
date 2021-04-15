@@ -4,8 +4,8 @@
 #include "stdlib.h"
 
 //#define DEBUG  //Usado para testear el programa en su fase de desarrollo. Activa varios logs y llena las matrices A y B con 1s
-#define DIBUJAR	  // Usado para dibujar las matrices A, B y C por pantalla. Recomendado desactivarlo para matrices muy grandes
-#define COMPROBAR //Usado para comprobar si el resultado con el algoritmo paralelo es correcto. Se recomienda desactivar para matrices muy grandes
+//#define DIBUJAR	  // Usado para dibujar las matrices A, B y C por pantalla. Recomendado desactivarlo para matrices muy grandes
+//#define COMPROBAR //Usado para comprobar si el resultado con el algoritmo paralelo es correcto. Se recomienda desactivar para matrices muy grandes
 void SUMMA(int *A_local, int *B_local, int *C_local, int N);
 void multiplicar_matrices(int *C, int *A, int *B, int N);
 void dibujar_matriz(int *vector, int N);
@@ -186,20 +186,31 @@ int main(int argc, char *argv[])
 		printf("Calculando........\n\n");
 		fflush(stdout);
 	}
+
+	double inicio, final, tiempo_transcurrido;
+
+	inicio = MPI_Wtime();
 	//Calculamos la multiplicacion usando el algoritmo SUMMA
 	SUMMA(A_local, B_local, C_local, N);
 
+	
 	//Recogemos los calculos parciales de cada nodo
 	MPI_Gather(C_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, Cb, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
 
+	final = MPI_Wtime();
+
+	tiempo_transcurrido = final - inicio;
 	if (world_rank == 0)
 	{
 		convertBlockedToNormal(Cb, C, N, numero_bloques); //Convertimos la matriz C en bloque a su forma normal matricial normal.
 
 		printf("Calculo terminado!!!\n\n\n");
 		fflush(stdout);
-		printf("Matriz C\n\n");
+		printf("Matriz C %dx%d, nodos: %d\n\n",N,N, world_size);
 		fflush(stdout);
+
+		printf("Tiempo transcurrido en calculo paralelo : %f segundos\n\n\n",tiempo_transcurrido);
+        fflush(stdout);
 
 #ifdef DIBUJAR
 		dibujar_matriz(C, N);
