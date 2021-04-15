@@ -4,8 +4,8 @@
 #include "stdlib.h"
 
 //#define DEBUG  //Usado para testear el programa en su fase de desarrollo. Activa varios logs y llena las matrices A y B con 1s
-//#define DIBUJAR // Usado para dibujar las matrices A, B y C por pantalla. Recomendado desactivarlo para matrices muy grandes
-
+#define DIBUJAR	  // Usado para dibujar las matrices A, B y C por pantalla. Recomendado desactivarlo para matrices muy grandes
+#define COMPROBAR //Usado para comprobar si el resultado con el algoritmo paralelo es correcto. Se recomienda desactivar para matrices muy grandes
 void SUMMA(int *A_local, int *B_local, int *C_local, int N);
 void multiplicar_matrices(int *C, int *A, int *B, int N);
 void dibujar_matriz(int *vector, int N);
@@ -22,6 +22,17 @@ int main(int argc, char *argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
+	if (argc < 2)
+	{
+		if (world_rank == 0)
+		{
+			printf("Uso: ./matrixMult <numero_dimensiones>\n");
+			fflush(stdout);
+
+			MPI_Abort(MPI_COMM_WORLD,-1);
+			return;
+		}
+	}
 	int N = atoi(argv[1]); //Tamaño de la matriz N x N
 
 	//### Comprobamos los prerequisitos ###
@@ -100,6 +111,8 @@ int main(int argc, char *argv[])
 			B[i] = rand() % 101;
 		}
 #endif
+
+		//Convertimos las matrices a forma de bloque para su calculo en el algoritmo SUMMA
 		Ab = (int *)calloc(N * N, sizeof(int));
 		convertNormalToBlocked(A, Ab, N, numero_bloques);
 
@@ -168,6 +181,11 @@ int main(int argc, char *argv[])
 #endif
 	MPI_Barrier(MPI_COMM_WORLD);
 
+	if (world_rank == 0)
+	{
+		printf("Calculando........\n\n");
+		fflush(stdout);
+	}
 	//Calculamos la multiplicacion usando el algoritmo SUMMA
 	SUMMA(A_local, B_local, C_local, N);
 
@@ -186,6 +204,8 @@ int main(int argc, char *argv[])
 #ifdef DIBUJAR
 		dibujar_matriz(C, N);
 #endif
+
+#ifdef COMPROBAR
 		//Ahora comprobamos si el calculo es correcto, usando la version secuencial de la multiplicacion
 		int *C_comprobacion = (int *)calloc(N * N, sizeof(int));
 		multiplicar_matrices(C_comprobacion, A, B, N);
@@ -210,6 +230,8 @@ int main(int argc, char *argv[])
 			printf("EL CALCULO ES CORRECTO\n\n");
 			fflush(stdout);
 		}
+
+#endif
 	}
 	if (world_rank == 0)
 	{

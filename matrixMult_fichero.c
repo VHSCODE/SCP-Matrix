@@ -19,10 +19,21 @@ int main(int argc, char *argv[])
     srand(time(NULL)); //Inicializamos el generador de numeros aleatorios
 
     int world_size, world_rank;
+
     MPI_Init(&argc, &argv);
 
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+
+
+     //########### Comprobamos los prerequisitos ################
+    if (argc < 5)
+    {
+        if (world_rank == 0)
+            printf("Uso : ./matrixMult_fichero <dimension_matriz> <nombre_fichero_matriz1> <nombre_fichero_matriz2> <nombre_fichero salida>\n");
+        MPI_Finalize();
+        return;
+    }
 
     int N = atoi(argv[1]); //Tamaño de la matriz N x N
 
@@ -30,7 +41,9 @@ int main(int argc, char *argv[])
 
     char *nombre_ficheroB = argv[3];
     char *nombre_fichero_salida = argv[4];
-    //### Comprobamos los prerequisitos ###
+    int numero_bloques = sqrt(world_size);
+
+   
     if (N % world_size != 0)
     {
         if (world_rank == 0)
@@ -41,9 +54,6 @@ int main(int argc, char *argv[])
         MPI_Finalize();
         return 0;
     }
-
-    int numero_bloques = sqrt(world_size);
-
     if (numero_bloques * numero_bloques != world_size)
     {
         if (world_rank == 0)
@@ -54,8 +64,11 @@ int main(int argc, char *argv[])
         MPI_Finalize();
         return 0;
     }
-    //#########
+    //#######################################################
 
+
+
+    
     //Matrices principales
     int *A;
     int *B;
@@ -81,10 +94,8 @@ int main(int argc, char *argv[])
 
         //Leemos las matrices de los  archivos
         leer_a_matriz(nombre_ficheroA, A, N);
-        dibujar_matriz(A, N);
         leer_a_matriz(nombre_ficheroB, B, N);
 
-        dibujar_matriz(A, N);
         Ab = (int *)calloc(N * N, sizeof(int));
         convertNormalToBlocked(A, Ab, N, numero_bloques);
 
@@ -151,32 +162,39 @@ int main(int argc, char *argv[])
         dibujar_matriz(A, N);
     }
 #endif
-    MPI_Barrier(MPI_COMM_WORLD);
 
     if (world_rank == 0)
     {
         printf("Calculando........\n\n");
         fflush(stdout);
     }
+
+    double inicio, final, tiempo_transcurrido;
+    MPI_Barrier(MPI_COMM_WORLD);
+    inicio = MPI_Wtime();
     //Calculamos la multiplicacion usando el algoritmo SUMMA
     SUMMA(A_local, B_local, C_local, N);
-
     //Recogemos los calculos parciales de cada nodo
     MPI_Gather(C_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, Cb, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
 
+    final = MPI_Wtime();
+
+    tiempo_transcurrido = final - inicio;
     if (world_rank == 0)
     {
         convertBlockedToNormal(Cb, C, N, numero_bloques); //Convertimos la matriz C en bloque a su forma normal matricial normal.
 
         printf("Calculo terminado!!!\n\n\n");
         fflush(stdout);
-        printf("Matriz C\n\n");
+        printf("Tiempo transcurrido en calculo paralelo : %f segundos\n\n\n",tiempo_transcurrido);
         fflush(stdout);
 
 #ifdef DIBUJAR
+        printf("Matriz C\n\n");
+        fflush(stdout);
         dibujar_matriz(C, N);
 #endif
-       
+
 #ifdef COMPROBAR
         //Ahora comprobamos si el calculo es correcto, usando la version secuencial de la multiplicacion
         int *C_comprobacion = (int *)calloc(N * N, sizeof(int));
@@ -202,13 +220,13 @@ int main(int argc, char *argv[])
             printf("EL CALCULO ES CORRECTO\n\n");
             fflush(stdout);
         }
-         escribir_matriz_a_archivo(nombre_fichero_salida, C, N);
 
-         printf("Matriz C escrita al archivo %s\n\n", nombre_fichero_salida);
+        free(C_comprobacion);
+        escribir_matriz_a_archivo(nombre_fichero_salida, C, N);
+
+        printf("Matriz C escrita al archivo %s\n\n", nombre_fichero_salida);
 #endif
     }
-
-   
     if (world_rank == 0)
     {
         free(A);
@@ -222,7 +240,6 @@ int main(int argc, char *argv[])
     free(A_local);
     free(B_local);
     free(C_local);
-
     MPI_Finalize();
 
     return 0;
@@ -470,25 +487,27 @@ void escribir_matriz_a_archivo(char *nombre_fichero, int *matriz, int N)
     char *linea;
 
     int i, j;
-    
+
     for (i = 0; i < N; i++)
     {
         linea = calloc(N * 2, sizeof(char)); //Dos veces el numero de elementos para prevenir errores de memoria
         for (j = 0; j < N; j++)
         {
             char str[20] = {0};
-
-            sprintf(str,"%d ",matriz[i +j * N]);
-            fflush(stdout);
+            if ((j + 1 == N))
+                sprintf(str, "%d", matriz[i + j * N]);
+            else
+                sprintf(str, "%d ", matriz[i + j * N]);
             strcat(linea, str);
         }
 
-        strcat(linea, "\n");
-        fputs(linea,fp_a);
+        if (i + 1 != N)
+            strcat(linea, "\n");
+        fputs(linea, fp_a);
+        free(linea);
     }
 
     fclose(fp_a);
-    free(linea);
 }
 void leer_a_matriz(char *nombre_fichero, int *matriz, int N)
 {
