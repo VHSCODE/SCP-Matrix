@@ -3,20 +3,18 @@
 #include "time.h"
 #include "stdlib.h"
 
+//#define DEBUG  //Usado para testear el programa en su fase de desarrollo. Activa varios logs y llena las matrices A y B con 1s
+//#define DIBUJAR // Usado para dibujar las matrices A, B y C por pantalla. Recomendado desactivarlo para matrices muy grandes
 
-#define DEBUG 0
-
-
-int **SUMMA(int **A, int **B, int **C, int N, MPI_Comm comm, int rank, int world_size);
-void multiplicar_matrices(int **C, int **A, int **B, int N);
-int **sumar_matriz(int **A, int **B, int N);
-void dibujar_matriz(int **matriz, int N);
-void crear_matriz2D_contigua(int*** matriz, int N);
-
-
+void SUMMA(int *A_local, int *B_local, int *C_local, int N);
+void multiplicar_matrices(int *C, int *A, int *B, int N);
+void dibujar_matriz(int *vector, int N);
+void convertNormalToBlocked(int *const A, int *Ab, int size, int numBlocks);
+void convertBlockedToNormal(int *const Ab, int *A, int size, int numBlocks);
 int main(int argc, char *argv[])
 {
-	srand(time(NULL));
+
+	srand(time(NULL)); //Inicializamos el generador de numeros aleatorios
 
 	int world_size, world_rank;
 	MPI_Init(&argc, &argv);
@@ -24,23 +22,10 @@ int main(int argc, char *argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
+	int N = atoi(argv[1]); //Tamaño de la matriz N x N
 
-	int nrow = atoi(argv[1]);
-	int ncol = atoi(argv[2]);
-
-	//Comprobamos que se cumplan los requisitos para el uso de la utilidad.
-
-	if (nrow != ncol)
-	{
-		if (world_rank == 0)
-		{
-			printf("Esta utilidad solo puede manejar matrices cuadradas. Abortando...\n");
-			fflush(stdout);
-		}
-		MPI_Finalize();
-		return 0;
-	}
-	if (nrow % world_size != 0)
+	//### Comprobamos los prerequisitos ###
+	if (N % world_size != 0)
 	{
 		if (world_rank == 0)
 		{
@@ -63,88 +48,211 @@ int main(int argc, char *argv[])
 		MPI_Finalize();
 		return 0;
 	}
+	//#########
 
-	MPI_Barrier(MPI_COMM_WORLD);
-	//Creamos la una topologia 2D con coordenadas cartesianas
-	MPI_Comm comm_cartesiano;
+	//Matrices principales
+	int *A;
+	int *B;
+	int *C;
 
-	int numero_dimensiones = 2;
-	const int dimensiones[2] = {numero_bloques,numero_bloques};
-	const int periodicidad[2] = {0, 0}; //No queremos que haya un bucle en cada fila o columna
-	int reordenacion = 0;				//Esto evita que mpi cree nuevos ranks para cada nodo.
+	//Matrices en forma de bloque
+	int *Ab;
+	int *Bb;
+	int *Cb;
 
-	MPI_Cart_create(MPI_COMM_WORLD, numero_dimensiones, dimensiones, periodicidad, reordenacion, &comm_cartesiano);
+	//Copias locales de las matrices
+	int *A_local;
+	int *B_local;
+	int *C_local;
 
-	int tamaño_submatrix = nrow / sqrt(world_size); //Con esto conseguimos el tamaño de la submatriz de cada nodo
-	
-	
-	
-	//Creamos las matrices de forma dinamica
-	/**
-	A = malloc(tamaño_submatrix * sizeof(int *));
-	B = malloc(tamaño_submatrix * sizeof(int *));
-	C = malloc(tamaño_submatrix * sizeof(int *));
-	**/
-
-	int **A;
-	int **B;
-	int **C;
-	crear_matriz2D_contigua(&A,tamaño_submatrix);
-	crear_matriz2D_contigua(&B,tamaño_submatrix);
-	crear_matriz2D_contigua(&C,tamaño_submatrix);
-	int i = 0;
-	int j = 0;
-	for(i; i < tamaño_submatrix; i++)
-		for(j; j < tamaño_submatrix; j++)
-			C[i][j] = 0;
-	/**
-	int i;
-	for (i = 0; i < tamaño_submatrix; i++)
-	{
-		A[i] = malloc(tamaño_submatrix * sizeof(int));
-		B[i] = malloc(tamaño_submatrix * sizeof(int));
-		C[i] = malloc(tamaño_submatrix * sizeof(int));
-	}
-		printf("Creando las matrices principales...\n");
-		fflush(stdout);
-	**/
-	//Llenamos las matrices de numeros aleatorios :P
-		for (i = 0; i < tamaño_submatrix; i++)
-		{
-			for (j = 0; j < tamaño_submatrix; j++)
-			{
-				if(DEBUG == 1)
-				{
-					A[i][j] = 1;
-					B[i][j] = 1;
-				}
-				else
-				{
-					A[i][j] = rand() % 101;
-					B[i][j] = rand() % 101;
-				}
-				
-			}
-		}
-
-	MPI_Barrier(MPI_COMM_WORLD);
-	//Calculamos la multiplicacion usando el algoritmo SUMMA
-	C = SUMMA(A, B, C, tamaño_submatrix, comm_cartesiano, world_rank, world_size);
+	//Asignamos memoria para las matrices principales
 	if (world_rank == 0)
 	{
-		dibujar_matriz(C, tamaño_submatrix);
+		A = (int *)calloc(N * N, sizeof(int));
+		B = (int *)calloc(N * N, sizeof(int));
+		C = (int *)calloc(N * N, sizeof(int));
+		int i;
+#ifdef DEBUG
+		for (i = 0; i < N * N; i++)
+		{
+			if (A[i] != 0 || B[i] != 0 || C[i] != 0)
+			{
+				printf("Error en la creacion de los matrices principales");
+				fflush(stdout);
+				MPI_Abort(MPI_COMM_WORLD, -1);
+				return -1;
+			}
+
+			printf("Matrices Principales....[ok]\n\n");
+			fflush(stdout);
+		}
+		for (i = 0; i < N * N; i++)
+		{
+			A[i] = 1;
+			B[i] = 1;
+		}
+#endif
+
+#ifndef DEBUG
+		for (i = 0; i < N * N; i++)
+		{
+			A[i] = rand() % 101;
+			B[i] = rand() % 101;
+		}
+#endif
+		Ab = (int *)calloc(N * N, sizeof(int));
+		convertNormalToBlocked(A, Ab, N, numero_bloques);
+
+		Bb = (int *)calloc(N * N, sizeof(int));
+		convertNormalToBlocked(B, Bb, N, numero_bloques);
+
+		Cb = (int *)calloc(N * N, sizeof(int));
+		convertNormalToBlocked(C, Cb, N, numero_bloques);
 	}
-	free(A);
-	free(B);
-	free(C);
+
+	//Ahora repartimos los trozos de forma equitativa los trozos de la matriz a cada nodo
+
+	int tamaño_submatriz = N / numero_bloques; //Con esto conseguimos el tamaño de la submatriz de cada nodo
+
+	A_local = (int *)calloc(tamaño_submatriz * tamaño_submatriz, sizeof(int));
+	B_local = (int *)calloc(tamaño_submatriz * tamaño_submatriz, sizeof(int));
+	C_local = (int *)calloc(tamaño_submatriz * tamaño_submatriz, sizeof(int));
+
+#ifdef DEBUG
+	int i = 0;
+	for (i = 0; i < tamaño_submatriz * tamaño_submatriz; i++)
+	{
+		if (A_local[i] != 0 || B_local[i] != 0 || C_local[i] != 0)
+		{
+			printf("Error en la creacion de los matrices locales");
+			fflush(stdout);
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return -1;
+		}
+	}
+	printf("Matrices Locales de Nodo %d....[ok]\n\n", world_rank);
+	fflush(stdout);
+#endif
+
+	MPI_Scatter(Ab, tamaño_submatriz * tamaño_submatriz, MPI_INT, A_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Scatter(Bb, tamaño_submatriz * tamaño_submatriz, MPI_INT, B_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Scatter(Cb, tamaño_submatriz * tamaño_submatriz, MPI_INT, C_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
+
+#ifdef DEBUG
+	for (i = 0; i < tamaño_submatriz * tamaño_submatriz; i++)
+	{
+		if (A_local[i] != 1 || B_local[i] != 1 || C_local[i] != 0)
+		{
+			printf("Error en la reparticion de trozos de las matrices principales");
+			fflush(stdout);
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return -1;
+		}
+	}
+
+	printf("Reparticion de trozos en nodo %d...[ok]\n\n", world_rank);
+	fflush(stdout);
+#endif
+
+#ifdef DIBUJAR
+	if (world_rank == 0)
+	{
+		printf("Matriz A\n\n");
+		fflush(stdout);
+		dibujar_matriz(A, N);
+
+		printf("Matriz B\n\n");
+		fflush(stdout);
+		dibujar_matriz(A, N);
+	}
+#endif
+	MPI_Barrier(MPI_COMM_WORLD);
+
+	//Calculamos la multiplicacion usando el algoritmo SUMMA
+	SUMMA(A_local, B_local, C_local, N);
+
+	//Recogemos los calculos parciales de cada nodo
+	MPI_Gather(C_local, tamaño_submatriz * tamaño_submatriz, MPI_INT, Cb, tamaño_submatriz * tamaño_submatriz, MPI_INT, 0, MPI_COMM_WORLD);
+
+	if (world_rank == 0)
+	{
+		convertBlockedToNormal(Cb, C, N, numero_bloques); //Convertimos la matriz C en bloque a su forma normal matricial normal.
+
+		printf("Calculo terminado!!!\n\n\n");
+		fflush(stdout);
+		printf("Matriz C\n\n");
+		fflush(stdout);
+
+#ifdef DIBUJAR
+		dibujar_matriz(C, N);
+#endif
+		//Ahora comprobamos si el calculo es correcto, usando la version secuencial de la multiplicacion
+		int *C_comprobacion = (int *)calloc(N * N, sizeof(int));
+		multiplicar_matrices(C_comprobacion, A, B, N);
+
+		int i = 0;
+		int flag = 0;
+		for (i = 0; i < N * N; i++)
+		{
+			if (C[i] != C_comprobacion[i])
+			{
+				flag = 1;
+				break;
+			}
+		}
+		if (flag)
+		{
+			printf("ERROR : EL CALCULO NO ES CORRECTO\n\n");
+			fflush(stdout);
+		}
+		else
+		{
+			printf("EL CALCULO ES CORRECTO\n\n");
+			fflush(stdout);
+		}
+	}
+	if (world_rank == 0)
+	{
+		free(A);
+		free(B);
+		free(C);
+
+		free(Ab);
+		free(Bb);
+		free(Cb);
+	}
+	free(A_local);
+	free(B_local);
+	free(C_local);
+
 	MPI_Finalize();
+
 	return 0;
 }
 
-int **SUMMA(int **A, int **B, int **C, int N, MPI_Comm comm, int rank, int world_size)
+void SUMMA(int *A_local, int *B_local, int *C_local, int N)
 {
+
+	int world_size, rank;
+	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+	MPI_Comm comm_cartesiano;
+	int numero_bloques = sqrt(world_size);
+
+	int numero_dimensiones = 2; //Array 2 dimensiones
+
+	const int dimensiones[2] = {numero_bloques, numero_bloques}; //Numero de filas y columnas de la topologia
+
+	const int periodicidad[2] = {0, 0}; //No queremos que haya un bucle en cada fila o columna
+
+	int reordenacion = 0; //Esto evita que MPI cree nuevos ranks para cada nodo.
+
+	//Creamos la una topologia 2D con coordenadas cartesianas
+	MPI_Cart_create(MPI_COMM_WORLD, numero_dimensiones, dimensiones, periodicidad, reordenacion, &comm_cartesiano);
+
 	int mis_coordenadas[2];
-	MPI_Cart_coords(comm, rank, 2, mis_coordenadas);
+	MPI_Cart_coords(comm_cartesiano, rank, 2, mis_coordenadas);
 
 	int fila, columna;
 
@@ -153,162 +261,207 @@ int **SUMMA(int **A, int **B, int **C, int N, MPI_Comm comm, int rank, int world
 
 	//En el algoritmo SUMMA, es necesario hacer broadcast entre filas y columnas, por lo que creamos sus respectivos comunicadores.
 
-
 	MPI_Comm comm_fila, comm_columna;
-	int mantener_dimm[2] = {1, 0}; //Esto es usado en la siguiente funcion para indicar si la entrada i-esima se incluye en la submatriz.
-	MPI_Cart_sub(comm, mantener_dimm, &comm_fila);
+	int mantener_dimm[2] = {1, 0}; //Esto es usado en la siguiente funcion para indicar si la dimension i-esima se incluye en la submatriz.
+	MPI_Cart_sub(comm_cartesiano, mantener_dimm, &comm_fila);
 
 	mantener_dimm[0] = 0;
 	mantener_dimm[1] = 1;
 
-	MPI_Cart_sub(comm, mantener_dimm, &comm_columna);
+	MPI_Cart_sub(comm_cartesiano, mantener_dimm, &comm_columna);
 
-	//Creamos las copias locales de A, B y C, usadas para operar con ellas.
-	
-	/**
-	int **A_local = malloc(N * sizeof(int *));
-	int **B_local = malloc(N * sizeof(int *));
-	int **C_temporal = malloc(N * sizeof(int *));
-	**/
-	int** A_local;
-	int** B_local;
-	int** C_temporal;
-	crear_matriz2D_contigua(&A_local,N);
-	crear_matriz2D_contigua(&B_local,N);
-	crear_matriz2D_contigua(&C_temporal,N);  //Esta matriz sera la solucion de cada submatriz, para luego juntarlas en la matriz final C
+	int *A_temporal;
+	int *B_temporal;
+	int tamaño_submatriz = N / numero_bloques;
+
+	A_temporal = (int *)calloc(tamaño_submatriz * tamaño_submatriz, sizeof(int));
+	B_temporal = (int *)calloc(tamaño_submatriz * tamaño_submatriz, sizeof(int));
+
+#ifdef DEBUG
 	int i = 0;
-	int j = 0;
-	for(i; i < N; i++)
-		for(j; j < N; j++)
-			C_temporal[i][j] = 0;
-	
-	/**
-	int i;
-	for (i = 0; i < N; i++)
+	for (i = 0; i < tamaño_submatriz * tamaño_submatriz; i++)
 	{
-		A[i] = malloc(N * sizeof(int));
-		B[i] = malloc(N * sizeof(int));
-		C[i] = malloc(N * sizeof(int));
-	}
-		printf("Creando las matrices locales...\n");
-		fflush(stdout);
-		
-	//Copiamos los datos a estas matrices locales
-**/
-	for (i = 0; i < N; i++)
-		for (j = 0; j < N; j++)
+		if (A_temporal[i] != 0 || B_temporal[i] != 0)
 		{
-			A_local[i][j] = A[i][j];
-			B_local[i][j] = B[i][j];
-			C[i][j] = 0;
+			printf("Error en la creacion de los matrices temporales\n\n");
+			fflush(stdout);
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return -1;
 		}
-		
-	int numero_bloques = sqrt(world_size);
+	}
+	printf("Matrices Temporales de Nodo %d....[ok]\n\n", rank);
+	fflush(stdout);
 
+#endif
 	int k;
+
 	for (k = 0; k < numero_bloques; k++)
 	{
 
-		if (columna == k) //Actualizamos la matriz A con la copia local de la matriz A
+		if (fila == k) //Actualizamos la matriz A con la copia local de la matriz A
 		{
-			int j, i;
-			for (i = 0; i < N; i++)
-				for (j = 0; j < N; j++)
-					A[i][j] = A_local[i][j];
+
+			//Al haber hecho las matrices contiguas, podemos hacer uso de memcpy sin problemas
+			memcpy(A_temporal, A_local, tamaño_submatriz * tamaño_submatriz * sizeof(int));
+
+#ifdef DEBUG
+			int i = 0;
+			for (i = 0; i < tamaño_submatriz * tamaño_submatriz; i++)
+			{
+				if (A_local[i] != A_temporal[i])
+				{
+					printf("Error: Copia de matriz local A en matriz temporal erronea\n\n...");
+					fflush(stdout);
+					MPI_Abort(MPI_COMM_WORLD, -1);
+					return -1;
+				}
+			}
+			printf("Copia de matriz A_local%d....[ok]\n\n", rank);
+			fflush(stdout);
+#endif
 		}
 
-		MPI_Bcast(&(A[0][0]), N * N, MPI_INT, k, comm_fila);
-		if (fila == k) //Actualizamos la matriz B con la copia local de la matriz B
+		int err = MPI_Bcast(A_temporal, tamaño_submatriz * tamaño_submatriz, MPI_INT, k, comm_fila); //Hacemos broadcast a toda la fila
+		if (err != MPI_SUCCESS)
 		{
-			int j, i;
-			for (i = 0; i < N; i++)
-				for (j = 0; j < N; j++)
-					B[i][j] = B_local[i][j];
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return;
 		}
-		
-		MPI_Bcast(&(B[0][0]), N * N, MPI_INT, k, comm_columna);
+		if (columna == k) //Actualizamos la matriz B con la copia local de la matriz B
+		{
+			memcpy(B_temporal, B_local, tamaño_submatriz * tamaño_submatriz * sizeof(int));
 
+#ifdef DEBUG
+			int i = 0;
+			for (i = 0; i < tamaño_submatriz * tamaño_submatriz; i++)
+			{
+				if (B_local[i] != B_temporal[i])
+				{
+					printf("Error: Copia de matriz local B en matriz temporal erronea\n...");
+					fflush(stdout);
+					MPI_Abort(MPI_COMM_WORLD, -1);
+					return -1;
+				}
+			}
+			printf("Copia de matriz B_local%d....[ok]\n\n", rank);
+			fflush(stdout);
+#endif
+		}
 
-
-		multiplicar_matrices(C_temporal, A, B, N);
-
-		
-		C = sumar_matriz(C, C_temporal, N);
-		
+		err = MPI_Bcast(B_temporal, tamaño_submatriz * tamaño_submatriz, MPI_INT, k, comm_columna); //Hacemos broadcast a toda la columna
+		if (err != MPI_SUCCESS)
+		{
+			MPI_Abort(MPI_COMM_WORLD, -1);
+			return;
+		}
+		multiplicar_matrices(C_local, A_temporal, B_temporal, tamaño_submatriz);
 	}
 
-	free(A_local);
-	free(B_local);
-	free(C_temporal);
-	return C;
+#ifdef DEBUG
+	printf("Nodo %d ha completado su parte del algoritmo SUMMA\n\n", rank);
+	fflush(stdout);
+#endif
+	MPI_Comm_free(&comm_cartesiano);
+	MPI_Comm_free(&comm_fila);
+	MPI_Comm_free(&comm_columna);
+	free(A_temporal);
+	free(B_temporal);
 }
 
 //Multiplicacion de matrices
-void multiplicar_matrices(int **C, int **A, int **B, int N)
+void multiplicar_matrices(int *C, int *A, int *B, int N)
 {
-	int a, i, j;
-	for (a = 0; a < N; a++)
+
+	int k, i, j;
+	for (i = 0; i < N; i++)
 	{
-		for (i = 0; i < N; i++)
+		for (j = 0; j < N; j++)
 		{
-			int suma = 0;
-			for (j = 0; j < N; j++)
+
+			for (k = 0; k < N; k++)
 			{
-				suma += A[i][j] * B[j][a];
+				C[i + j * N] += A[i + k * N] * B[k + j * N];
 			}
-			C[i][a] = suma;
 		}
 	}
 }
 
-int **sumar_matriz(int **A, int **B, int N)
-{
-	int i, j;
-
-	//Creamos una matriz para guardar el resultado
-	int **C;
-	crear_matriz2D_contigua(&C,N);
-	for (i = 0; i < N; i++)
-		for (j = 0; j < N; j++)
-			C[i][j] = A[i][j] + B[i][j];
-
-	return C;
-}
-
-void dibujar_matriz(int **matriz, int N)
+void dibujar_matriz(int *vector, int N)
 {
 	int i, j;
 	for (i = 0; i < N; i++)
 	{
 		for (j = 0; j < N; j++)
 		{
-			printf("%d     ", matriz[i][j]);
+			printf("%d     ", vector[i + j * N]);
+			fflush(stdout);
 		}
 		printf("\n");
+		fflush(stdout);
 	}
+	printf("\n\n\n");
+	fflush(stdout);
 }
 
-
-/**
- * Esta funcion crea una matriz 2D contiguamente en memoria, para que MPI pueda hacer broadcast
- */
-void crear_matriz2D_contigua(int*** matriz, int N)
+/** 
+ * 
+ * Convierte la matriz A a una matriz ab en formato de bloque, para poder usarlo en el algoritmo SUMMA
+ * 
+ * Gracias a https://kayaogz.github.io/teaching/app4-programmation-parallele-2018/tp/tp3/summa-solution-reference.c
+ **/
+void convertNormalToBlocked(
+	int *const A,
+	int *Ab,
+	int size,
+	int numBlocks)
 {
-    int *p = (int *)malloc(N*N*sizeof(int));
-    if (!p) return;
-
-    
-    (*matriz) = (int **)malloc(N*sizeof(int*));
-    if (!(*matriz)) {
-       free(p);
-       return;
-    }
-
-    
-	int i;
-    for (i=0; i<N; i++) 
-       (*matriz)[i] = &(p[i*N]);
-	
-
-	return;
+	const int blockSize = size / numBlocks;
+	int *curBlockElem = Ab;
+	int bj, bi, j, i;
+	for (bj = 0; bj < numBlocks; bj++)
+	{
+		for (bi = 0; bi < numBlocks; bi++)
+		{
+			int *blockBegin = A + bi * blockSize + bj * blockSize * size;
+			for (j = 0; j < blockSize; j++)
+			{
+				for (i = 0; i < blockSize; i++)
+				{
+					(*curBlockElem) = blockBegin[i + j * size];
+					curBlockElem++;
+				}
+			}
+		}
+	}
+}
+/** 
+ * 
+ * Convierte la matriz Ab a una matriz A en formato "column mayor", esto se usa para sacar el resultado final de la matriz C en bloque
+ * 
+ * Gracias a https://kayaogz.github.io/teaching/app4-programmation-parallele-2018/tp/tp3/summa-solution-reference.c
+ **/
+void convertBlockedToNormal(
+	int *const Ab,
+	int *A,
+	int size,
+	int numBlocks)
+{
+	const int blockSize = size / numBlocks;
+	int *curBlockElem = Ab;
+	int bj, bi, j, i;
+	for (bj = 0; bj < numBlocks; bj++)
+	{
+		for (bi = 0; bi < numBlocks; bi++)
+		{
+			int *blockBegin = A + bi * blockSize + bj * blockSize * size;
+			for (j = 0; j < blockSize; j++)
+			{
+				for (i = 0; i < blockSize; i++)
+				{
+					blockBegin[i + j * size] = (*curBlockElem);
+					curBlockElem++;
+				}
+			}
+		}
+	}
 }
